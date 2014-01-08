@@ -1,0 +1,8 @@
+forward:true
+proxy:some.proxy.net
+
+[dns]
+www.google.com 127.0.0.1
+your.momma.com 127.0.0.1
+who.cares.net 127.0.0.1
+www.cblack.de 127.0.0.1

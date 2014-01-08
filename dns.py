@@ -3,15 +3,18 @@
 #do this using built-in socketserver
 
 import SocketServer
+import socket
 import struct
 import sys
+
+MASTER_DICT = {} #Master dictionary containing DNS records to IPs -> a dictionary of dictionaries for each subdirectory
 
 class DNSHandler(SocketServer.BaseRequestHandler):
     """
     Takes in DNS requests, processes them and gives an anwer. If DNS forwarding is enabled, will attempt to forward the request.
     TODO: Implement pars-able settings file
     """
-    masterDict = {} #Master dictionary containing DNS records to IPs -> a dictionary of dictionaries for each subdirectory
+    masterDict = MASTER_DICT
     def processFlags(self, flags):
         #give a list of flags that describe what's wanted
         #first bit is request or response
@@ -88,7 +91,7 @@ class DNSHandler(SocketServer.BaseRequestHandler):
 
             return (transID, flags, qCount, aCount, nsCount, resCount)
 
-    def lookupNames(self, nameRecordes):
+    def lookupNames(self, nameRecords):
         for name in nameRecords:
             #look through our record list and match names for addresses
             if name[-1] in self.masterDict:
@@ -109,7 +112,6 @@ class DNSHandler(SocketServer.BaseRequestHandler):
         try:
             transID, flags, qCount, aCount, nsCount, resCount = self.processHeader(data)
             flagList = self.processFlags(flags)
-
             if "QUERY" in flagList:
                 #this is a query
                 nameRecords = self.getNames(data[12:], qCount)
@@ -137,14 +139,61 @@ def readConfig(filePath):
     #Open a specified file path and read the DNS configuration
     try:
         config = {}
+        dnsRecords = {}
+        config['global'] = []
+        curSection = 'global'
         with open(filePath, 'r') as inFile:
             for line in inFile:
-                    if line[0] == '[':
-                        config['sections'].append(line.strip('[]'))
-
-
+                if line[0] == '\n' or line[0] == '#':
+                    continue
+                if '[' in line:
+                    curSection = ''.join(c for c in line if c not in '[]\n')
+                    continue
+                if curSection not in config:
+                    config[curSection] = []
+                config[curSection].append(line.strip())
+            if 'global' in config:
+                for entry in config['global']:
+                    tmpOpt = entry.split(':')
+                    config[tmpOpt[0]] = tmpOpt[1]
+            if 'dns' in config:
+                for entry in config['dns']:
+                    '''
+                    This is the important section, we need to create all the mappings here.
+                    If this section doesn't exist, we should bail.
+                    format should be like so:
+                        some.addr.tld\tipaddress
+                    '''
+                    #First get the two main parts
+                    chunks = entry.split()
+                    name = chunks[0]
+                    intAddr = struct.unpack("L", socket.inet_aton(chunks[1]))
+                    #Get ip integer
+                    parts = name.split('.').reverse()
+                    for x in range(0, len(parts)):
+                        curDict = dnsRecords
+                        while x != len(parts): #While we aren't the least most domain
+                            if parts[x] in curDict:
+                                curDict = curDict[parts[x]]
+                            else:
+                                curDict[parts[x]] = {}
+                                curDict = curDict[parts[x]]
+                        curDict[parts[x]] = intAddr
+            config['records'] = dnsRecords
+            return config
+    except Exception, ex:
+        print "[-] Error trying to parse configuration file at %s" % filePath
+        print "==============================================="
+        print ex
+        sys.exit()
 
 if __name__ == "__main__":
+        if len(sys.argv) < 2:
+            print 'Usage: %s <Configuration File>' % sys.argv[0]
+            sys.exit(1)
+
+        config = readConfig(sys.argv[1])
+        MASTER_DICT = config['records']
         HOST, PORT = "0.0.0.0", 53
         server = SocketServer.UDPServer((HOST, PORT), DNSHandler)
         print "[+] Telling server to serve forever!"
