@@ -14,7 +14,8 @@ class DNSHandler(SocketServer.BaseRequestHandler):
     Takes in DNS requests, processes them and gives an anwer. If DNS forwarding is enabled, will attempt to forward the request.
     TODO: Implement pars-able settings file
     """
-    masterDict = MASTER_DICT
+    global MASTER_DICT
+
     def processFlags(self, flags):
         #give a list of flags that describe what's wanted
         #first bit is request or response
@@ -59,7 +60,7 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             toRet.append("NOTIMPLEMENTED")
         if respCode == 5:
             toRet.append("REFUSED")
-
+        return toRet
 
     def getNames(self, data, queryCount):
         names = []
@@ -94,8 +95,8 @@ class DNSHandler(SocketServer.BaseRequestHandler):
     def lookupNames(self, nameRecords):
         for name in nameRecords:
             #look through our record list and match names for addresses
-            if name[-1] in self.masterDict:
-                curDict = self.masterDict[name[-1]]
+            if name[-1] in MASTER_DICT:
+                curDict = MASTER_DICT[name[-1]]
             for x in range(len(name), 0, -1):
                 if name[x] in curDict and x != 0:
                     curDict = curDict[name[x]]
@@ -115,6 +116,9 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             if "QUERY" in flagList:
                 #this is a query
                 nameRecords = self.getNames(data[12:], qCount)
+                addr = self.lookupNames(nameRecords)
+                if addr:
+                    pass
 
 
 
@@ -136,6 +140,7 @@ class DNSHandler(SocketServer.BaseRequestHandler):
         toSend = self.processQuery(data)
 
 def readConfig(filePath):
+    #Warning: User controlled input.
     #Open a specified file path and read the DNS configuration
     try:
         config = {}
@@ -167,18 +172,20 @@ def readConfig(filePath):
                     #First get the two main parts
                     chunks = entry.split()
                     name = chunks[0]
-                    intAddr = struct.unpack("L", socket.inet_aton(chunks[1]))
+                    intAddr = struct.unpack(">L", socket.inet_aton(chunks[1]))[0]
                     #Get ip integer
-                    parts = name.split('.').reverse()
-                    for x in range(0, len(parts)):
-                        curDict = dnsRecords
-                        while x != len(parts): #While we aren't the least most domain
-                            if parts[x] in curDict:
-                                curDict = curDict[parts[x]]
-                            else:
-                                curDict[parts[x]] = {}
-                                curDict = curDict[parts[x]]
-                        curDict[parts[x]] = intAddr
+                    parts = name.split('.')
+                    parts.reverse() #reverse() doesn't return anything, wth?
+                    curDict = dnsRecords
+                    x = 0
+                    while x != len(parts):
+                        if parts[x] in curDict:
+                            curDict = curDict[parts[x]]
+                        else:
+                            curDict[parts[x]] = {}
+                            curDict = curDict[parts[x]]
+                        x += 1
+                    curDict['lld'] = intAddr #There might be a request for a lower domain.
             config['records'] = dnsRecords
             return config
     except Exception, ex:
