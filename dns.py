@@ -145,14 +145,23 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             foundList.append((wholeName),curDict['lld'])
         return (foundList, badList)
 
-    def buildAnswer(self, type, answerList):
+    def buildAnswers(self, type, answerList):
+        answers = []
         #build a query response containing only type A answers for now
         name = "\xc0\x0c" #\xc means pointer, 00c is the offset
         #type is already defined by caller
         dnsClass = 1 #Internet Address
         ttl = 10 # Seconds valid, TODO: Make this configurable
+        #Keep in mind, we already have the integer representing the IP in the answer list
         for answer in answerList:
-
+            data = name
+            data += struct.pack(">H", type)
+            data += struct.pack(">H", dnsClass)
+            data += struct.pack(">H", ttl)
+            data += struct.pack(">H", 4) #Length of an IP address, will vary with other types
+            data += struct.pack(">H", answer[1]) # Should be the IP, not the bundled hostname
+            answers.append(data)
+        return answers
 
     def processQuery(self, data):
         """
@@ -164,12 +173,11 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             if "QUERY" in flagList:
                 #this is a query
                 origQuery = data[12:]
-                nameRecords = self.getNames(origQuery, qCount)
+                nameRecords = self.getNames(origQuery, qCount) #Apparantly, this shouldn't be more than 1, ever.
                 found, notFound = self.lookupNames(nameRecords)
                 #We should decide what to do with not found queires, send a NXDOMAIN?
-                for entry in found:
-                    #we need to build a response containing all the answers.
-
+                answerData = self.buildAnswers(1, found) #build answer data for each found record
+                print '[=] Debug print!'
 
 
 
