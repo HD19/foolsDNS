@@ -1,6 +1,5 @@
 #!/usr/bin/python
 
-#do this using built-in socketserver
 
 import SocketServer
 import socket
@@ -11,8 +10,7 @@ MASTER_DICT = {} #Master dictionary containing DNS records to IPs -> a dictionar
 
 class DNSHandler(SocketServer.BaseRequestHandler):
     """
-    Takes in DNS requests, processes them and gives an anwer. If DNS forwarding is enabled, will attempt to forward the request.
-    TODO: Implement pars-able settings file
+    Takes in DNS requests, processes them and gives an answer. If DNS forwarding is enabled, will attempt to forward the request.
     """
     global MASTER_DICT
 
@@ -34,7 +32,7 @@ class DNSHandler(SocketServer.BaseRequestHandler):
         authAnswerBit = (flags >> 5) & 1
 
         if authAnswerBit:
-            toRet.append("AUTHORATIVE")
+            toRet.append("AUTHORITATIVE")
 
         truncBit = (flags >> 6) & 1
         if truncBit:
@@ -62,6 +60,34 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             toRet.append("REFUSED")
         return toRet
 
+    def buildFlags(self, flagList):
+        toRet = 0
+        #For each flag, we need to set the appropriate bits in an integer
+        if 'RESPONSE' in flagList:
+            toRet |= (1 << 15)
+        if 'INVERSE' in flagList:
+            toRet |= (4 << 14)
+        if 'AUTHORITATIVE' in flagList:
+            toRet |= (1 << 10)
+        if 'TRUNC' in flagList:
+            toRet |= (1 << 9)
+        if 'RECURSE' in flagList:
+            toRet |= (1 << 8)
+        if 'RECURSESUPPORT' in flagList:
+            toRet |= (1 << 7)
+        if 'FORMATERROR' in flagList:
+            toRet |= (1 << 6)
+        if 'SERVERFAILURE' in flagList:
+            toRet |= (2 << 6)
+        if 'NAMEERROR' in flagList:
+            toRet |= (3 << 6)
+        if 'NOTIMPLEMENTED' in flagList:
+            toRet |= (4 << 6)
+        if 'REFUSED' in flagList:
+            toRet |= (5 << 6)
+
+
+
     def getNames(self, data, queryCount):
         names = []
         for x in range(0, queryCount):
@@ -80,6 +106,14 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             names.append(tmpName)
         return names
 
+    def buildHeader(self, transID, flags, qCount, aCount, nsCount, resCount):
+        header = struct.pack(">H", transID)
+        header += struct.pack(">H", flags)
+        header += struct.pack(">H", qCount)
+        header += struct.pack(">H", aCount)
+        header += struct.pack(">H", nsCount)
+        header += struct.pack(">H", resCount)
+        return header
 
     def processHeader(self, data):
             #first two bytes should be an ID field
@@ -93,17 +127,31 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             return (transID, flags, qCount, aCount, nsCount, resCount)
 
     def lookupNames(self, nameRecords):
+        foundList = []
+        badList = []
         for name in nameRecords:
             #look through our record list and match names for addresses
-            if name[-1] in MASTER_DICT:
-                curDict = MASTER_DICT[name[-1]]
-            for x in range(len(name), 0, -1):
-                if name[x] in curDict and x != 0:
-                    curDict = curDict[name[x]]
-                elif x == 0:
-                    return curDict[name[x]]
+            wholeName = '.'.join(name)
+            name.reverse()
+            curDict = MASTER_DICT
+            for part in name:
+                if part in curDict:
+                    curDict = curDict[part]
                 else:
-                    return None
+                    print "[-] Couldnt record for %s request" % (wholeName)
+                    badList.append(wholeName)
+                    break
+
+            foundList.append((wholeName),curDict['lld'])
+        return (foundList, badList)
+
+    def buildAnswer(self, type, answerList):
+        #build a query response containing only type A answers for now
+        name = "\xc0\x0c" #\xc means pointer, 00c is the offset
+        #type is already defined by caller
+        dnsClass = 1 #Internet Address
+        ttl = 10 # Seconds valid, TODO: Make this configurable
+        for answer in answerList:
 
 
     def processQuery(self, data):
@@ -115,10 +163,12 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             flagList = self.processFlags(flags)
             if "QUERY" in flagList:
                 #this is a query
-                nameRecords = self.getNames(data[12:], qCount)
-                addr = self.lookupNames(nameRecords)
-                if addr:
-                    pass
+                origQuery = data[12:]
+                nameRecords = self.getNames(origQuery, qCount)
+                found, notFound = self.lookupNames(nameRecords)
+                #We should decide what to do with not found queires, send a NXDOMAIN?
+                for entry in found:
+                    #we need to build a response containing all the answers.
 
 
 
