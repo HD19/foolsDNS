@@ -7,7 +7,7 @@ import struct
 import sys
 
 MASTER_DICT = {} #Master dictionary containing DNS records to IPs -> a dictionary of dictionaries for each subdirectory
-
+#TODO: Implement what happens with queries we don't know the answer to. Also make that configurable.
 class DNSHandler(SocketServer.BaseRequestHandler):
     """
     Takes in DNS requests, processes them and gives an answer. If DNS forwarding is enabled, will attempt to forward the request.
@@ -85,6 +85,7 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             toRet |= (4 << 6)
         if 'REFUSED' in flagList:
             toRet |= (5 << 6)
+        return toRet
 
 
 
@@ -141,11 +142,19 @@ class DNSHandler(SocketServer.BaseRequestHandler):
                     print "[-] Couldnt record for %s request" % (wholeName)
                     badList.append(wholeName)
                     break
-
-            foundList.append((wholeName),curDict['lld'])
+            if wholeName not in badList:
+                foundList.append(((wholeName),curDict['lld']))
         return (foundList, badList)
 
-    def buildAnswers(self, type, answerList):
+    def buildQueryResponse(self, transID, query, qCount, answers, flags):
+        #We need to build the whole response, header and all.
+        resp = self.buildHeader(transID, flags, qCount, len(answers), 0, 0)
+        resp += query
+        for answer in answers:
+            resp += answer
+        return resp
+
+    def buildAnswers(self, answerList, type=1):
         answers = []
         #build a query response containing only type A answers for now
         name = "\xc0\x0c" #\xc means pointer, 00c is the offset
@@ -157,9 +166,9 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             data = name
             data += struct.pack(">H", type)
             data += struct.pack(">H", dnsClass)
-            data += struct.pack(">H", ttl)
+            data += struct.pack(">I", ttl) #TTL field is NOT limited to 2 bytes
             data += struct.pack(">H", 4) #Length of an IP address, will vary with other types
-            data += struct.pack(">H", answer[1]) # Should be the IP, not the bundled hostname
+            data += struct.pack(">I", answer[1]) # Should be the IP, not the bundled hostname
             answers.append(data)
         return answers
 
@@ -170,17 +179,19 @@ class DNSHandler(SocketServer.BaseRequestHandler):
         try:
             transID, flags, qCount, aCount, nsCount, resCount = self.processHeader(data)
             flagList = self.processFlags(flags)
+            resp = None
+            #Might need to change this flow if we're doing different types of queries
             if "QUERY" in flagList:
                 #this is a query
                 origQuery = data[12:]
                 nameRecords = self.getNames(origQuery, qCount) #Apparantly, this shouldn't be more than 1, ever.
                 found, notFound = self.lookupNames(nameRecords)
                 #We should decide what to do with not found queires, send a NXDOMAIN?
-                answerData = self.buildAnswers(1, found) #build answer data for each found record
-                print '[=] Debug print!'
-
-
-
+                answerData = self.buildAnswers(answerList=found) #build answer data for each found record
+                respFlagList = ['RESPONSE', 'AUTHORITATIVE', 'RECRUSE', 'RECURSESUPPORT']
+                respFlags = self.buildFlags(respFlagList)
+                resp = self.buildQueryResponse(transID, query=origQuery, qCount=qCount, answers=answerData, flags=respFlags)
+                return resp
         except Exception, ex:
             print "[-] Error attempting to process query"
             print "====================================="
@@ -192,10 +203,14 @@ class DNSHandler(SocketServer.BaseRequestHandler):
         """
         Where the party starts.
         """
-        data = self.request[0].strip() #Do we need to strip this?
-        socket = self.request[1]
-        
-        toSend = self.processQuery(data)
+        try:
+            data = self.request[0].strip() #Do we need to strip this?
+            socket = self.request[1]
+            toSend = self.processQuery(data)
+            socket.sendto(toSend, self.client_address)
+        except Exception, ex:
+            print "[-] Critical failure in handling request"
+            sys.exit()
 
 def readConfig(filePath):
     #Warning: User controlled input.
