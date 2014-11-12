@@ -7,7 +7,23 @@ import struct
 import sys
 
 MASTER_DICT = {} #Master dictionary containing DNS records to IPs -> a dictionary of dictionaries for each subdirectory
+
+class DNSSocketServer(SocketServer.UDPServer): #(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
+    # Ctrl-C will cleanly kill all spawned threads
+    daemon_threads = True
+    # much faster rebinding
+    allow_reuse_address = True
+
+    def __init__(self, server_address, RequestHandlerClass, **kwargs):
+        if 'config' not in kwargs:
+            raise Exception("[!] No configuration passed!")
+            sys.exit(1)
+        self.config = kwargs['config']
+        SocketServer.UDPServer.__init__(self, server_address, RequestHandlerClass)
+        
+
 #TODO: Implement what happens with queries we don't know the answer to. Also make that configurable.
+# We should actually just use dns libs to do the lookup.
 class DNSHandler(SocketServer.BaseRequestHandler):
     """
     Takes in DNS requests, processes them and gives an answer. If DNS forwarding is enabled, will attempt to forward the request.
@@ -139,7 +155,7 @@ class DNSHandler(SocketServer.BaseRequestHandler):
                 if part in curDict:
                     curDict = curDict[part]
                 else:
-                    print "[-] Couldnt record for %s request" % (wholeName)
+                    #print "[-] Couldn't find record for %s request" % (wholeName)
                     badList.append(wholeName)
                     break
             if wholeName not in badList:
@@ -186,6 +202,10 @@ class DNSHandler(SocketServer.BaseRequestHandler):
                 origQuery = data[12:]
                 nameRecords = self.getNames(origQuery, qCount) #Apparantly, this shouldn't be more than 1, ever.
                 found, notFound = self.lookupNames(nameRecords)
+                if len(notFound) > 0 and self.server.config['forward']:
+                    forFound, forNotFound = self.forwardResolve(notFound)
+                    found.extend(forFound)
+                    notFound.extend(notFound)     
                 #We should decide what to do with not found queires, send a NXDOMAIN?
                 answerData = self.buildAnswers(answerList=found) #build answer data for each found record
                 respFlagList = ['RESPONSE', 'AUTHORITATIVE', 'RECRUSE', 'RECURSESUPPORT']
@@ -193,6 +213,7 @@ class DNSHandler(SocketServer.BaseRequestHandler):
                 resp = self.buildQueryResponse(transID, query=origQuery, qCount=qCount, answers=answerData, flags=respFlags)
                 return resp
         except Exception, ex:
+            print "====================================="
             print "[-] Error attempting to process query"
             print "====================================="
             print ex
@@ -211,6 +232,20 @@ class DNSHandler(SocketServer.BaseRequestHandler):
         except Exception, ex:
             print "[-] Critical failure in handling request"
             sys.exit()
+            
+    def forwardResolve(self, nameList):
+        #take the list of names, and ask the OS, which would resolve normally.
+        retList = []
+        badList = []
+        for name in nameList:
+            try:
+                res = socket.gethostbyname(name)
+                intAddr = struct.unpack(">L", socket.inet_aton(res))[0]
+                retList.append((name, intAddr))
+            except Exception, ex:
+                print "[!] Couldn't find host for %s" % name
+                badList.append(name)
+        return (retList, badList)
 
 def readConfig(filePath):
     #Warning: User controlled input.
@@ -262,6 +297,7 @@ def readConfig(filePath):
             config['records'] = dnsRecords
             return config
     except Exception, ex:
+        print "==============================================="
         print "[-] Error trying to parse configuration file at %s" % filePath
         print "==============================================="
         print ex
@@ -269,12 +305,22 @@ def readConfig(filePath):
 
 if __name__ == "__main__":
         if len(sys.argv) < 2:
-            print 'Usage: %s <Configuration File>' % sys.argv[0]
+            print 'Usage: %s <Configuration File> (host) (port)' % sys.argv[0]
             sys.exit(1)
+        
+        if len(sys.argv) == 3:
+            HOST = sys.argv[2]
+        elif len(sys.argv) == 4:
+            HOST = sys.argv[2]
+            PORT = int(sys.argv[3])
+        else:
+            HOST, PORT = "0.0.0.0", 53
+        
 
         config = readConfig(sys.argv[1])
         MASTER_DICT = config['records']
-        HOST, PORT = "0.0.0.0", 53
-        server = SocketServer.UDPServer((HOST, PORT), DNSHandler)
-        print "[+] Telling server to serve forever!"
-        server.serve_forever()
+        #HOST, PORT = "0.0.0.0", 53
+        server = DNSSocketServer((HOST, PORT), DNSHandler, config=config)
+        print "[=] Got host and port: (%s, %d)" % (HOST, PORT)
+        print "[+] We shall serve, FOREVER!"
+        server.serve_forever()  
