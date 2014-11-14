@@ -5,10 +5,11 @@ import SocketServer
 import socket
 import struct
 import sys
+import traceback
 
 MASTER_DICT = {} #Master dictionary containing DNS records to IPs -> a dictionary of dictionaries for each subdirectory
 
-class DNSSocketServer(SocketServer.UDPServer): #(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
+class DNSSocketServer(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
     # Ctrl-C will cleanly kill all spawned threads
     daemon_threads = True
     # much faster rebinding
@@ -107,18 +108,22 @@ class DNSHandler(SocketServer.BaseRequestHandler):
 
     def getNames(self, data, queryCount):
         names = []
+        tdata = data[12:]
         for x in range(0, queryCount):
         #We should have the beginning of the question recrods
         #The format for the qName is [len][string of len bytes][len]../[0]
             tmpName = []
-            tmpLen = struct.unpack("<B", data[0])[0]+1
-            tmpName.append(data[1:tmpLen])
+            tmpLen = struct.unpack("<B", tdata[0])[0]+1
+            if tmpLen > 90: #Something's wrong here, usually we cut the data a byte too far
+                tdata = data[11:]
+                tmpLen = struct.unpack("<B", tdata[0])[0]+1
+            tmpName.append(tdata[1:tmpLen])
             lastPos = tmpLen
             while tmpLen:
-                tmpLen = struct.unpack("<B", data[lastPos])[0]
+                tmpLen = struct.unpack("<B", tdata[lastPos])[0]
                 lastPos += 1
                 if tmpLen:
-                    tmpName.append(data[lastPos:lastPos+tmpLen])
+                    tmpName.append(tdata[lastPos:lastPos+tmpLen])
                     lastPos = lastPos+tmpLen
             names.append(tmpName)
         return names
@@ -198,14 +203,13 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             resp = None
             #Might need to change this flow if we're doing different types of queries
             if "QUERY" in flagList:
-                #this is a query
-                origQuery = data[12:]
-                nameRecords = self.getNames(origQuery, qCount) #Apparantly, this shouldn't be more than 1, ever.
+                origQuery = data[12:] # why is this 12?
+                nameRecords = self.getNames(data, qCount) #Apparantly, this shouldn't be more than 1, ever.
                 found, notFound = self.lookupNames(nameRecords)
                 if len(notFound) > 0 and self.server.config['forward']:
                     forFound, forNotFound = self.forwardResolve(notFound)
                     found.extend(forFound)
-                    notFound.extend(notFound)     
+                    notFound.extend([x for x in forNotFound if x not in notFound])     
                 #We should decide what to do with not found queires, send a NXDOMAIN?
                 answerData = self.buildAnswers(answerList=found) #build answer data for each found record
                 respFlagList = ['RESPONSE', 'AUTHORITATIVE', 'RECRUSE', 'RECURSESUPPORT']
@@ -216,7 +220,8 @@ class DNSHandler(SocketServer.BaseRequestHandler):
             print "====================================="
             print "[-] Error attempting to process query"
             print "====================================="
-            print ex
+            print traceback.format_exc()
+            print "[-] Query data: %s" % data
             print "====================================="
             sys.exit()
     
@@ -226,11 +231,15 @@ class DNSHandler(SocketServer.BaseRequestHandler):
         """
         try:
             data = self.request[0].strip() #Do we need to strip this?
+            #print "[=] Processing request: %s" % data
             socket = self.request[1]
             toSend = self.processQuery(data)
             socket.sendto(toSend, self.client_address)
         except Exception, ex:
+            print "========================================"
             print "[-] Critical failure in handling request"
+            print ex
+            print "========================================"
             sys.exit()
             
     def forwardResolve(self, nameList):
@@ -314,7 +323,7 @@ if __name__ == "__main__":
             HOST = sys.argv[2]
             PORT = int(sys.argv[3])
         else:
-            HOST, PORT = "0.0.0.0", 53
+            HOST, PORT = "localhost", 53
         
 
         config = readConfig(sys.argv[1])
